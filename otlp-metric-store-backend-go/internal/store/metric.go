@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,7 +23,8 @@ type Metric interface {
 
 // metric implements MetricsStore using a ClickHouse connection.
 type metric struct {
-	conn driver.Conn
+	isDBEnabled bool
+	conn        driver.Conn
 }
 
 // NewMetricStore creates a new ClickHouseMetricsStore connected to the given address.
@@ -30,12 +32,17 @@ func NewMetric(
 	conn driver.Conn,
 ) Metric {
 	return &metric{
-		conn: conn,
+		isDBEnabled: conn != nil,
+		conn:        conn,
 	}
 }
 
 // CreateTables executes DDL for meta and metric tables.
 func (s *metric) CreateTables(ctx context.Context) error {
+	if !s.isDBEnabled {
+		slog.Info("Database disabled, skipping table creation")
+		return nil
+	}
 	ddls := []string{
 		createMetaTableSQL,
 		createGaugeTableSQL,
@@ -53,6 +60,10 @@ func (s *metric) CreateTables(ctx context.Context) error {
 func (s *metric) InsertGauge(
 	ctx context.Context,
 	rows []model.GaugeRow) error {
+	if !s.isDBEnabled {
+		slog.Info("Database disabled, skipping database insert for Gauge rows", slog.Int("rowCount", len(rows)))
+		return nil
+	}
 	// Upsert unique meta rows (dedup within this batch) into dimension table
 	if len(rows) == 0 {
 		return nil
@@ -143,6 +154,10 @@ func (s *metric) InsertGauge(
 func (s *metric) InsertSum(
 	ctx context.Context,
 	rows []model.SumRow) error {
+	if !s.isDBEnabled {
+		slog.Info("Database disabled, skipping database insert for Sum rows", slog.Int("rowCount", len(rows)))
+		return nil
+	}
 	// Upsert unique meta rows (dedup within this batch) into dimension table
 	if len(rows) == 0 {
 		return nil

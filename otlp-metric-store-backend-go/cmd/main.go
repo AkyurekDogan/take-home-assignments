@@ -2,20 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
-	"log/slog"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"dash0.com/otlp-log-processor-backend/internal/app"
 	"dash0.com/otlp-log-processor-backend/internal/config"
 	"dash0.com/otlp-log-processor-backend/internal/grpc"
 	"dash0.com/otlp-log-processor-backend/internal/store"
 	"dash0.com/otlp-log-processor-backend/internal/telemetry"
-
-	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 func main() {
@@ -39,48 +36,28 @@ func main() {
 		})
 
 	// Create store and initialize tables if ClickHouse is enabled and address is provided.
-	var metricStore store.Metric
-	if cfg.ClickHouse.Enabled && cfg.ClickHouse.Addr != "" {
-		// Create ClickHouse connection explicitly, then wrap it with our MetricStore
-		conn, err := clickhouse.Open(&clickhouse.Options{
-			Addr: []string{cfg.ClickHouse.Addr},
-			Auth: clickhouse.Auth{
-				Database: cfg.ClickHouse.Database,
-				Username: cfg.ClickHouse.Username,
-				Password: cfg.ClickHouse.Password,
-			},
-			Settings: clickhouse.Settings{
-				"max_execution_time": 60,
-			},
-			DialTimeout: 5 * time.Second,
-		})
-		if err != nil {
-			log.Fatalf("opening clickhouse connection: %v", err)
+	conn, err := store.NewClickhouse(ctx, store.ClickHouseOptions{
+		IsEnabled: cfg.ClickHouse.Enabled,
+		Addr:      cfg.ClickHouse.Addr,
+		Database:  cfg.ClickHouse.Database,
+		Username:  cfg.ClickHouse.Username,
+		Password:  cfg.ClickHouse.Password,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrClickHouseDisabled) {
+			log.Printf("clickhouse storage is disabled, proceeding without database connection")
+		} else {
+			log.Fatalf("error initializing clickhouse service: %v", err)
 		}
-		if err := conn.Ping(ctx); err != nil {
-			_ = conn.Close()
-			log.Fatalf("pinging clickhouse: %v", err)
-		}
-		metricStore = store.NewMetric(conn)
-
-		defer func() {
-			if err := metricStore.Close(); err != nil {
-				log.Printf("failed to close clickhouse metric store: %v", err)
-			}
-		}()
-		slog.Info("ClickHouse storage enabled", slog.String("addr", cfg.ClickHouse.Addr))
-		//Create the required tables.
-		if err := metricStore.CreateTables(ctx); err != nil {
-			log.Fatalf("failed to create clickhouse tables: %v", err)
-		}
-		slog.Info("Required tables are created", slog.String("addr", cfg.ClickHouse.Addr))
-	} else {
-		slog.Info("ClickHouse storage disabled or address empty; running without persistence")
 	}
+	// initialize the metric store with the database connection (which may be nil if ClickHouse is disabled)
+	// if database is disabled, the store will log insert operations instead of writing to a database
+	metricStore := store.NewMetric(conn)
 	// Initialize and run the application
 	metricServer := grpc.NewMetricServer(metricStore)
+	// initialize the application with the configured components. The application will manage their lifecycles.
 	application := app.New(cfg, telemetryProvider, grpcSrv, metricServer)
-
+	// Run the application. This will block until the application is stopped (e.g. via SIGINT/SIGTERM).
 	if err := application.Run(ctx); err != nil {
 		log.Fatalf("run application: %v", err)
 	}
