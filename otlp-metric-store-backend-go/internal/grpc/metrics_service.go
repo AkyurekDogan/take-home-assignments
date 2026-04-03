@@ -4,18 +4,22 @@ import (
 	"context"
 	"log/slog"
 
+	"dash0.com/otlp-log-processor-backend/internal/clickhouse"
+	"dash0.com/otlp-log-processor-backend/internal/metric"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 )
 
 type dash0MetricsServiceServer struct {
-	addr  string
-	store MetricsStore
+	store clickhouse.Metric
 
 	colmetricspb.UnimplementedMetricsServiceServer
 }
 
-func newServer(addr string, store MetricsStore) colmetricspb.MetricsServiceServer {
-	return &dash0MetricsServiceServer{addr: addr, store: store}
+// NewServer constructs a MetricsServiceServer.
+// The first parameter (addr) is accepted for backward compatibility with call sites
+// but is not used by the implementation.
+func NewServer(_ string, store clickhouse.Metric) colmetricspb.MetricsServiceServer {
+	return &dash0MetricsServiceServer{store: store}
 }
 
 func (m *dash0MetricsServiceServer) Export(ctx context.Context, request *colmetricspb.ExportMetricsServiceRequest) (*colmetricspb.ExportMetricsServiceResponse, error) {
@@ -25,12 +29,12 @@ func (m *dash0MetricsServiceServer) Export(ctx context.Context, request *colmetr
 	if m.store != nil {
 		rm := request.GetResourceMetrics()
 
-		if gaugeRows := MapGaugeRows(rm); len(gaugeRows) > 0 {
+		if gaugeRows := metric.MapGaugeRows(rm); len(gaugeRows) > 0 {
 			if err := m.store.InsertGauge(ctx, gaugeRows); err != nil {
 				return nil, err
 			}
 		}
-		if sumRows := MapSumRows(rm); len(sumRows) > 0 {
+		if sumRows := metric.MapSumRows(rm); len(sumRows) > 0 {
 			if err := m.store.InsertSum(ctx, sumRows); err != nil {
 				return nil, err
 			}

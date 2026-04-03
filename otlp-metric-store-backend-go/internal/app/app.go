@@ -6,19 +6,17 @@ import (
 	"log/slog"
 	"net"
 
+	"dash0.com/otlp-log-processor-backend/internal/clickhouse"
 	"dash0.com/otlp-log-processor-backend/internal/config"
 	grpcserver "dash0.com/otlp-log-processor-backend/internal/grpc"
 	"dash0.com/otlp-log-processor-backend/internal/telemetry"
 
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type App struct {
 	cfg        config.Config
-	grpcServer *grpc.Server
+	grpcServer grpcserver.Server
 }
 
 func New(cfg config.Config) *App {
@@ -43,15 +41,40 @@ func (a *App) Run(ctx context.Context) error {
 		return fmt.Errorf("listen on %s: %w", a.cfg.GRPC.ListenAddr, err)
 	}
 
-	a.grpcServer = grpc.NewServer(
-		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		grpc.MaxRecvMsgSize(a.cfg.GRPC.MaxReceiveMessageSize),
-		grpc.Creds(insecure.NewCredentials()),
-	)
+	a.grpcServer = grpcserver.NewGRPCServer(grpcserver.ServerOptions{
+		MaxReceiveMessageSize: a.cfg.GRPC.MaxReceiveMessageSize,
+	})
+
+	// Optionally initialize ClickHouse storage when enabled via config.
+	var store clickhouse.Metric
+	if a.cfg.ClickHouse.Enabled && a.cfg.ClickHouse.Addr != "" {
+		s, err := clickhouse.NewMetric(
+			ctx,
+			a.cfg.ClickHouse.Addr,
+			a.cfg.ClickHouse.Database,
+			a.cfg.ClickHouse.Username,
+			a.cfg.ClickHouse.Password,
+		)
+		if err != nil {
+			return fmt.Errorf("new clickhouse metric: %w", err)
+		}
+		if err := s.CreateTables(ctx); err != nil {
+			return fmt.Errorf("create clickhouse tables: %w", err)
+		}
+		store = s
+		defer func() {
+			if err := s.Close(); err != nil {
+				slog.Warn("closing clickhouse", slog.Any("error", err))
+			}
+		}()
+		slog.Info("ClickHouse storage enabled", slog.String("addr", a.cfg.ClickHouse.Addr))
+	} else {
+		slog.Info("ClickHouse storage disabled or address empty; running without persistence")
+	}
 
 	colmetricspb.RegisterMetricsServiceServer(
 		a.grpcServer,
-		grpcserver.NewServer(a.cfg.GRPC.ListenAddr, nil),
+		grpcserver.NewServer(a.cfg.GRPC.ListenAddr, store),
 	)
 
 	slog.Info("starting gRPC server", slog.String("listen_addr", a.cfg.GRPC.ListenAddr))

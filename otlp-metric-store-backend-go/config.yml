@@ -1,0 +1,11 @@
+grpc:
+  listenAddr: "localhost:4317"
+  maxReceiveMessageSize: 16777216
+
+clickhouse:
+  enabled: false
+  addr: "localhost:9000"
+  database: "default"
+  username: "default"
+  password: ""
+

@@ -1,82 +1,64 @@
 package config
 
-import "flag"
+import (
+	"fmt"
+	"os"
+
+	"gopkg.in/yaml.v3"
+)
 
 const (
 	defaultListenAddr            = "localhost:4317"
 	defaultMaxReceiveMessageSize = 16 * 1024 * 1024
+	defaultConfigPath            = "config.yml"
 )
 
 type Config struct {
-	GRPC       GRPCConfig
-	ClickHouse ClickHouseConfig
+	GRPC       GRPCConfig       `yaml:"grpc"`
+	ClickHouse ClickHouseConfig `yaml:"clickhouse"`
 }
 
 type GRPCConfig struct {
-	ListenAddr            string
-	MaxReceiveMessageSize int
+	ListenAddr            string `yaml:"listenAddr"`
+	MaxReceiveMessageSize int    `yaml:"maxReceiveMessageSize"`
 }
 
 type ClickHouseConfig struct {
-	Addr     string
-	Database string
-	Username string
-	Password string
-	Enabled  bool
+	Addr     string `yaml:"addr"`
+	Database string `yaml:"database"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	Enabled  bool   `yaml:"enabled"`
 }
 
+// MustLoad reads configuration from config.yml in the module root (or current working
+// directory when running) and applies safe defaults for missing fields.
+// It panics on read or parse errors to match previous fatal semantics.
 func MustLoad() Config {
-	var cfg Config
+	return MustLoadFile(defaultConfigPath)
+}
 
-	flag.StringVar(
-		&cfg.GRPC.ListenAddr,
-		"listenAddr",
-		defaultListenAddr,
-		"The listen address",
-	)
+// MustLoadFile reads configuration from the provided YAML file path.
+func MustLoadFile(path string) Config {
+	// Start with defaults
+	cfg := Config{
+		GRPC: GRPCConfig{
+			ListenAddr:            defaultListenAddr,
+			MaxReceiveMessageSize: defaultMaxReceiveMessageSize,
+		},
+		ClickHouse: ClickHouseConfig{
+			Database: "default",
+			Username: "default",
+			Enabled:  false,
+		},
+	}
 
-	flag.IntVar(
-		&cfg.GRPC.MaxReceiveMessageSize,
-		"maxReceiveMessageSize",
-		defaultMaxReceiveMessageSize,
-		"The max message size in bytes the server can receive",
-	)
-
-	flag.StringVar(
-		&cfg.ClickHouse.Addr,
-		"clickhouseAddr",
-		"",
-		"ClickHouse address in host:port format (optional)",
-	)
-
-	flag.StringVar(
-		&cfg.ClickHouse.Database,
-		"clickhouseDatabase",
-		"default",
-		"ClickHouse database name",
-	)
-
-	flag.StringVar(
-		&cfg.ClickHouse.Username,
-		"clickhouseUsername",
-		"default",
-		"ClickHouse username",
-	)
-
-	flag.StringVar(
-		&cfg.ClickHouse.Password,
-		"clickhousePassword",
-		"",
-		"ClickHouse password",
-	)
-
-	flag.BoolVar(
-		&cfg.ClickHouse.Enabled,
-		"clickhouseEnabled",
-		false,
-		"Enable ClickHouse storage",
-	)
-
-	flag.Parse()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		panic(fmt.Errorf("reading config file %s: %w", path, err))
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		panic(fmt.Errorf("parsing config file %s: %w", path, err))
+	}
 	return cfg
 }

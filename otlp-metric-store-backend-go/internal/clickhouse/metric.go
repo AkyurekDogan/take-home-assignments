@@ -5,52 +5,32 @@ import (
 	"fmt"
 	"time"
 
+	"dash0.com/otlp-log-processor-backend/internal/model"
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// GaugeRow represents a single gauge data point for ClickHouse insertion.
-type GaugeRow struct {
-	ResourceAttributes    map[string]string
-	ResourceSchemaUrl     string
-	ScopeName             string
-	ScopeVersion          string
-	ScopeAttributes       map[string]string
-	ScopeDroppedAttrCount uint32
-	ScopeSchemaUrl        string
-	ServiceName           string
-	MetricName            string
-	MetricDescription     string
-	MetricUnit            string
-	Attributes            map[string]string
-	StartTimeUnix         time.Time
-	TimeUnix              time.Time
-	Value                 float64
-	Flags                 uint32
-}
-
-// SumRow represents a single sum data point for ClickHouse insertion.
-type SumRow struct {
-	GaugeRow
-	AggregationTemporality int32
-	IsMonotonic            bool
-}
-
-// MetricsStore defines the interface for storing metrics in ClickHouse.
-type MetricsStore interface {
+// Metric defines the interface for storing metrics in ClickHouse.
+type Metric interface {
 	CreateTables(ctx context.Context) error
-	InsertGauge(ctx context.Context, rows []GaugeRow) error
-	InsertSum(ctx context.Context, rows []SumRow) error
+	InsertGauge(ctx context.Context, rows []model.GaugeRow) error
+	InsertSum(ctx context.Context, rows []model.SumRow) error
 	Close() error
 }
 
-// ClickHouseMetricsStore implements MetricsStore using a ClickHouse connection.
-type ClickHouseMetricsStore struct {
+// metric implements MetricsStore using a ClickHouse connection.
+type metric struct {
 	conn driver.Conn
 }
 
-// NewClickHouseMetricsStore creates a new ClickHouseMetricsStore connected to the given address.
-func NewClickHouseMetricsStore(ctx context.Context, addr string, database string, username string, password string) (*ClickHouseMetricsStore, error) {
+// NewMetric creates a new ClickHouseMetricsStore connected to the given address.
+func NewMetric(
+	ctx context.Context,
+	addr string,
+	database string,
+	username string,
+	password string,
+) (*metric, error) {
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{addr},
 		Auth: clickhouse.Auth{
@@ -70,11 +50,11 @@ func NewClickHouseMetricsStore(ctx context.Context, addr string, database string
 		_ = conn.Close()
 		return nil, fmt.Errorf("pinging clickhouse: %w", err)
 	}
-	return &ClickHouseMetricsStore{conn: conn}, nil
+	return &metric{conn: conn}, nil
 }
 
 // CreateTables executes DDL for all 5 metric tables.
-func (s *ClickHouseMetricsStore) CreateTables(ctx context.Context) error {
+func (s *metric) CreateTables(ctx context.Context) error {
 	ddls := []string{
 		createGaugeTableSQL,
 		createSumTableSQL,
@@ -91,7 +71,7 @@ func (s *ClickHouseMetricsStore) CreateTables(ctx context.Context) error {
 }
 
 // InsertGauge batch-inserts gauge rows into otel_metrics_gauge.
-func (s *ClickHouseMetricsStore) InsertGauge(ctx context.Context, rows []GaugeRow) error {
+func (s *metric) InsertGauge(ctx context.Context, rows []model.GaugeRow) error {
 	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO otel_metrics_gauge")
 	if err != nil {
 		return fmt.Errorf("preparing gauge batch: %w", err)
@@ -122,7 +102,7 @@ func (s *ClickHouseMetricsStore) InsertGauge(ctx context.Context, rows []GaugeRo
 }
 
 // InsertSum batch-inserts sum rows into otel_metrics_sum.
-func (s *ClickHouseMetricsStore) InsertSum(ctx context.Context, rows []SumRow) error {
+func (s *metric) InsertSum(ctx context.Context, rows []model.SumRow) error {
 	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO otel_metrics_sum")
 	if err != nil {
 		return fmt.Errorf("preparing sum batch: %w", err)
@@ -155,6 +135,6 @@ func (s *ClickHouseMetricsStore) InsertSum(ctx context.Context, rows []SumRow) e
 }
 
 // Close closes the underlying ClickHouse connection.
-func (s *ClickHouseMetricsStore) Close() error {
+func (s *metric) Close() error {
 	return s.conn.Close()
 }

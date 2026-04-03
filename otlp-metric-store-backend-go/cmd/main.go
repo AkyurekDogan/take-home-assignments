@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os/signal"
 	"syscall"
@@ -11,15 +12,17 @@ import (
 )
 
 func main() {
-	cfg := config.MustLoad()
+	// Read configuration from YAML file (default: config.yml). Use -config to override.
+	var configPath string
+	flag.StringVar(&configPath, "config", "../config.yml", "Path to YAML config file")
+	flag.Parse()
+
+	cfg := config.MustLoadFile(configPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	application, err := app.New(ctx, cfg)
-	if err != nil {
-		log.Fatalf("create application: %v", err)
-	}
+	application := app.New(cfg)
 
 	if err := application.Run(ctx); err != nil {
 		log.Fatalf("run application: %v", err)

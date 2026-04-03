@@ -1,10 +1,6 @@
 package grpc
 
 import (
-	"context"
-	"errors"
-	"flag"
-	"log"
 	"log/slog"
 	"net"
 
@@ -12,14 +8,8 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
-	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-)
-
-var (
-	listenAddr            = flag.String("listenAddr", "localhost:4317", "The listen address")
-	maxReceiveMessageSize = flag.Int("maxReceiveMessageSize", 16777216, "The max message size in bytes the server can receive")
 )
 
 const name = "dash0.com/otlp-log-processor-backend"
@@ -38,45 +28,29 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
-}
-
-func main() {
-	if err := run(); err != nil {
-		log.Fatalln(err)
-	}
-}
-
-func run() (err error) {
+	// Set otelslog as default slog logger for this package usages.
 	slog.SetDefault(logger)
-	logger.Info("Starting application")
+}
 
-	// Set up OpenTelemetry.
-	otelShutdown, err := setupOTelSDK(context.Background())
-	if err != nil {
-		return
-	}
+// Server is the gRPC server interface exposed for the application layer.
+// It embeds grpc.ServiceRegistrar to remain compatible with protobuf Register* helpers.
+type Server interface {
+	grpc.ServiceRegistrar
+	Serve(lis net.Listener) error
+	GracefulStop()
+}
 
-	// Handle shutdown properly so nothing leaks.
-	defer func() {
-		err = errors.Join(err, otelShutdown(context.Background()))
-	}()
+// ServerOptions configures NewGRPCServer.
+type ServerOptions struct {
+	MaxReceiveMessageSize int
+}
 
-	flag.Parse()
-
-	slog.Debug("Starting listener", slog.String("listenAddr", *listenAddr))
-	listener, err := net.Listen("tcp", *listenAddr)
-	if err != nil {
-		return err
-	}
-
-	grpcServer := grpc.NewServer(
+// NewGRPCServer constructs a *grpc.Server with OpenTelemetry instrumentation
+// and insecure transport credentials for local/edge scenarios.
+func NewGRPCServer(opts ServerOptions) Server {
+	return grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		grpc.MaxRecvMsgSize(*maxReceiveMessageSize),
+		grpc.MaxRecvMsgSize(opts.MaxReceiveMessageSize),
 		grpc.Creds(insecure.NewCredentials()),
 	)
-	colmetricspb.RegisterMetricsServiceServer(grpcServer, newServer(*listenAddr, nil))
-
-	slog.Debug("Starting gRPC server")
-
-	return grpcServer.Serve(listener)
 }
