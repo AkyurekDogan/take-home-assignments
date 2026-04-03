@@ -34,7 +34,7 @@ func main() {
 		grpc.ServerOptions{
 			MaxReceiveMessageSize: cfg.GRPC.MaxReceiveMessageSize,
 		})
-	var metricStore clickhouse.Metric
+	var metricStore clickhouse.MetricStore
 	var err error
 	if cfg.ClickHouse.Enabled && cfg.ClickHouse.Addr != "" {
 		metricStore, err = clickhouse.NewMetric(

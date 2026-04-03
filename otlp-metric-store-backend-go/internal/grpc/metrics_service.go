@@ -9,7 +9,7 @@ import (
 )
 
 type dash0MetricsServiceServer struct {
-	store clickhouse.Metric
+	store clickhouse.MetricStore
 
 	colmetricspb.UnimplementedMetricsServiceServer
 }
@@ -17,7 +17,7 @@ type dash0MetricsServiceServer struct {
 // NewMetricServer constructs a MetricsServiceServer.
 // The first parameter (addr) is accepted for backward compatibility with call sites
 // but is not used by the implementation.
-func NewMetricServer(_ string, store clickhouse.Metric) colmetricspb.MetricsServiceServer {
+func NewMetricServer(_ string, store clickhouse.MetricStore) colmetricspb.MetricsServiceServer {
 	return &dash0MetricsServiceServer{store: store}
 }
 
