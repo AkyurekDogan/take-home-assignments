@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net"
 
-	"dash0.com/otlp-log-processor-backend/internal/clickhouse"
 	"dash0.com/otlp-log-processor-backend/internal/config"
 	grpcserver "dash0.com/otlp-log-processor-backend/internal/grpc"
 	"dash0.com/otlp-log-processor-backend/internal/telemetry"
@@ -15,18 +14,28 @@ import (
 )
 
 type App struct {
-	cfg        config.Config
-	grpcServer grpcserver.Server
+	cfg               config.Config
+	grpcServer        grpcserver.Server
+	grpcMetricServer  colmetricspb.MetricsServiceServer
+	telemetryProvider telemetry.Provider
 }
 
-func New(cfg config.Config) *App {
+func New(
+	cfg config.Config,
+	telemetryProvider telemetry.Provider,
+	grpcServer grpcserver.Server,
+	grpcMetricServer colmetricspb.MetricsServiceServer,
+) *App {
 	return &App{
-		cfg: cfg,
+		cfg:               cfg,
+		telemetryProvider: telemetryProvider,
+		grpcServer:        grpcServer,
+		grpcMetricServer:  grpcMetricServer,
 	}
 }
 
 func (a *App) Run(ctx context.Context) error {
-	otelShutdown, err := telemetry.SetupOTelSDK(ctx)
+	otelShutdown, err := a.telemetryProvider.Setup(ctx)
 	if err != nil {
 		return fmt.Errorf("setup otel sdk: %w", err)
 	}
@@ -41,40 +50,9 @@ func (a *App) Run(ctx context.Context) error {
 		return fmt.Errorf("listen on %s: %w", a.cfg.GRPC.ListenAddr, err)
 	}
 
-	a.grpcServer = grpcserver.NewGRPCServer(grpcserver.ServerOptions{
-		MaxReceiveMessageSize: a.cfg.GRPC.MaxReceiveMessageSize,
-	})
-
-	// Optionally initialize ClickHouse storage when enabled via config.
-	var store clickhouse.Metric
-	if a.cfg.ClickHouse.Enabled && a.cfg.ClickHouse.Addr != "" {
-		s, err := clickhouse.NewMetric(
-			ctx,
-			a.cfg.ClickHouse.Addr,
-			a.cfg.ClickHouse.Database,
-			a.cfg.ClickHouse.Username,
-			a.cfg.ClickHouse.Password,
-		)
-		if err != nil {
-			return fmt.Errorf("new clickhouse metric: %w", err)
-		}
-		if err := s.CreateTables(ctx); err != nil {
-			return fmt.Errorf("create clickhouse tables: %w", err)
-		}
-		store = s
-		defer func() {
-			if err := s.Close(); err != nil {
-				slog.Warn("closing clickhouse", slog.Any("error", err))
-			}
-		}()
-		slog.Info("ClickHouse storage enabled", slog.String("addr", a.cfg.ClickHouse.Addr))
-	} else {
-		slog.Info("ClickHouse storage disabled or address empty; running without persistence")
-	}
-
 	colmetricspb.RegisterMetricsServiceServer(
 		a.grpcServer,
-		grpcserver.NewServer(a.cfg.GRPC.ListenAddr, store),
+		a.grpcMetricServer,
 	)
 
 	slog.Info("starting gRPC server", slog.String("listen_addr", a.cfg.GRPC.ListenAddr))

@@ -30,7 +30,7 @@ func NewMetric(
 	database string,
 	username string,
 	password string,
-) (*metric, error) {
+) (Metric, error) {
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{addr},
 		Auth: clickhouse.Auth{
@@ -54,7 +54,7 @@ func NewMetric(
 }
 
 // CreateTables executes DDL for all 5 metric tables.
-func (s *metric) CreateTables(ctx context.Context) error {
+func (s metric) CreateTables(ctx context.Context) error {
 	ddls := []string{
 		createGaugeTableSQL,
 		createSumTableSQL,
@@ -71,7 +71,7 @@ func (s *metric) CreateTables(ctx context.Context) error {
 }
 
 // InsertGauge batch-inserts gauge rows into otel_metrics_gauge.
-func (s *metric) InsertGauge(ctx context.Context, rows []model.GaugeRow) error {
+func (s metric) InsertGauge(ctx context.Context, rows []model.GaugeRow) error {
 	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO otel_metrics_gauge")
 	if err != nil {
 		return fmt.Errorf("preparing gauge batch: %w", err)
@@ -102,7 +102,7 @@ func (s *metric) InsertGauge(ctx context.Context, rows []model.GaugeRow) error {
 }
 
 // InsertSum batch-inserts sum rows into otel_metrics_sum.
-func (s *metric) InsertSum(ctx context.Context, rows []model.SumRow) error {
+func (s metric) InsertSum(ctx context.Context, rows []model.SumRow) error {
 	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO otel_metrics_sum")
 	if err != nil {
 		return fmt.Errorf("preparing sum batch: %w", err)
