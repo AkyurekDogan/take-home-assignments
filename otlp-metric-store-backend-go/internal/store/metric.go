@@ -1,69 +1,45 @@
-package clickhouse
+package store
 
 import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
-	"time"
 
 	"dash0.com/otlp-log-processor-backend/internal/model"
-	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	xxhash "github.com/cespare/xxhash/v2"
 )
 
-// MetricStore defines the interface for storing metrics in ClickHouse.
-type MetricStore interface {
+// Metric defines the interface for storing metrics in ClickHouse.
+type Metric interface {
 	CreateTables(ctx context.Context) error
 	InsertGauge(ctx context.Context, rows []model.GaugeRow) error
 	InsertSum(ctx context.Context, rows []model.SumRow) error
 	Close() error
 }
 
-// metricStore implements MetricsStore using a ClickHouse connection.
-type metricStore struct {
+// metric implements MetricsStore using a ClickHouse connection.
+type metric struct {
 	conn driver.Conn
 }
 
-// NewMetric creates a new ClickHouseMetricsStore connected to the given address.
+// NewMetricStore creates a new ClickHouseMetricsStore connected to the given address.
 func NewMetric(
-	ctx context.Context,
-	addr string,
-	database string,
-	username string,
-	password string,
-) (MetricStore, error) {
-	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{addr},
-		Auth: clickhouse.Auth{
-			Database: database,
-			Username: username,
-			Password: password,
-		},
-		Settings: clickhouse.Settings{
-			"max_execution_time": 60,
-		},
-		DialTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("opening clickhouse connection: %w", err)
+	conn driver.Conn,
+) Metric {
+	return &metric{
+		conn: conn,
 	}
-	if err := conn.Ping(ctx); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("pinging clickhouse: %w", err)
-	}
-	return &metricStore{conn: conn}, nil
 }
 
 // CreateTables executes DDL for meta and metric tables.
-func (s *metricStore) CreateTables(ctx context.Context) error {
+func (s *metric) CreateTables(ctx context.Context) error {
 	ddls := []string{
+		createMetaTableSQL,
 		createGaugeTableSQL,
 		createSumTableSQL,
-		createHistogramTableSQL,
-		createExponentialHistogramTableSQL,
-		createSummaryTableSQL,
 	}
 	for _, ddl := range ddls {
 		if err := s.conn.Exec(ctx, ddl); err != nil {
@@ -74,10 +50,32 @@ func (s *metricStore) CreateTables(ctx context.Context) error {
 }
 
 // InsertGauge upserts meta rows and inserts fact rows into otel_metrics_gauge.
-func (s *metricStore) InsertGauge(ctx context.Context, rows []model.GaugeRow) error {
-	// Upsert unique metas for this batch
+func (s *metric) InsertGauge(
+	ctx context.Context,
+	rows []model.GaugeRow) error {
+	// Upsert unique meta rows (dedup within this batch) into dimension table
+	if len(rows) == 0 {
+		return nil
+	}
 	seen := make(map[uint64]struct{}, len(rows))
-	metaBatch, err := s.conn.PrepareBatch(ctx, "INSERT INTO otel_metric_meta")
+	metaBatch, err := s.conn.PrepareBatch(ctx, `
+        INSERT INTO otel_metric_meta (
+            meta_id,
+            ServiceName,
+            ResourceAttributes,
+            ResourceSchemaUrl,
+            ScopeName,
+            ScopeVersion,
+            ScopeAttributes,
+            ScopeDroppedAttrCount,
+            ScopeSchemaUrl,
+            MetricName,
+            MetricDescription,
+            MetricUnit,
+            Attributes,
+            AggregationTemporality,
+            IsMonotonic
+        )`)
 	if err != nil {
 		return fmt.Errorf("preparing meta batch (gauge): %w", err)
 	}
@@ -88,6 +86,7 @@ func (s *metricStore) InsertGauge(ctx context.Context, rows []model.GaugeRow) er
 		}
 		if err := metaBatch.Append(
 			id,
+			r.ServiceName,
 			r.ResourceAttributes,
 			r.ResourceSchemaUrl,
 			r.ScopeName,
@@ -95,13 +94,12 @@ func (s *metricStore) InsertGauge(ctx context.Context, rows []model.GaugeRow) er
 			r.ScopeAttributes,
 			r.ScopeDroppedAttrCount,
 			r.ScopeSchemaUrl,
-			r.ServiceName,
 			r.MetricName,
 			r.MetricDescription,
 			r.MetricUnit,
 			r.Attributes,
-			nil, // AggregationTemporality
-			nil, // IsMonotonic
+			nil, // AggregationTemporality (nullable)
+			nil, // IsMonotonic (nullable)
 		); err != nil {
 			return fmt.Errorf("appending meta row (gauge): %w", err)
 		}
@@ -111,8 +109,15 @@ func (s *metricStore) InsertGauge(ctx context.Context, rows []model.GaugeRow) er
 		return fmt.Errorf("sending meta batch (gauge): %w", err)
 	}
 
-	// Insert fact rows
-	factBatch, err := s.conn.PrepareBatch(ctx, "INSERT INTO otel_metrics_gauge")
+	// Insert fact rows with reference to meta_id
+	factBatch, err := s.conn.PrepareBatch(ctx, `
+        INSERT INTO otel_metrics_gauge (
+            meta_id,
+            StartTimeUnix,
+            TimeUnix,
+            Value,
+            Flags
+        )`)
 	if err != nil {
 		return fmt.Errorf("preparing gauge fact batch: %w", err)
 	}
@@ -120,6 +125,7 @@ func (s *metricStore) InsertGauge(ctx context.Context, rows []model.GaugeRow) er
 		id := computeMetaIDGauge(r)
 		if err := factBatch.Append(
 			id,
+			r.StartTimeUnix,
 			r.TimeUnix,
 			r.Value,
 			r.Flags,
@@ -127,14 +133,39 @@ func (s *metricStore) InsertGauge(ctx context.Context, rows []model.GaugeRow) er
 			return fmt.Errorf("appending gauge fact row: %w", err)
 		}
 	}
+	if len(rows) == 0 {
+		return nil
+	}
 	return factBatch.Send()
 }
 
 // InsertSum upserts meta rows and inserts fact rows into otel_metrics_sum.
-func (s *metricStore) InsertSum(ctx context.Context, rows []model.SumRow) error {
-	// Upsert unique metas for this batch
+func (s *metric) InsertSum(
+	ctx context.Context,
+	rows []model.SumRow) error {
+	// Upsert unique meta rows (dedup within this batch) into dimension table
+	if len(rows) == 0 {
+		return nil
+	}
 	seen := make(map[uint64]struct{}, len(rows))
-	metaBatch, err := s.conn.PrepareBatch(ctx, "INSERT INTO otel_metric_meta")
+	metaBatch, err := s.conn.PrepareBatch(ctx, `
+        INSERT INTO otel_metric_meta (
+            meta_id,
+            ServiceName,
+            ResourceAttributes,
+            ResourceSchemaUrl,
+            ScopeName,
+            ScopeVersion,
+            ScopeAttributes,
+            ScopeDroppedAttrCount,
+            ScopeSchemaUrl,
+            MetricName,
+            MetricDescription,
+            MetricUnit,
+            Attributes,
+            AggregationTemporality,
+            IsMonotonic
+        )`)
 	if err != nil {
 		return fmt.Errorf("preparing meta batch (sum): %w", err)
 	}
@@ -145,6 +176,7 @@ func (s *metricStore) InsertSum(ctx context.Context, rows []model.SumRow) error 
 		}
 		if err := metaBatch.Append(
 			id,
+			r.ServiceName,
 			r.ResourceAttributes,
 			r.ResourceSchemaUrl,
 			r.ScopeName,
@@ -152,7 +184,6 @@ func (s *metricStore) InsertSum(ctx context.Context, rows []model.SumRow) error 
 			r.ScopeAttributes,
 			r.ScopeDroppedAttrCount,
 			r.ScopeSchemaUrl,
-			r.ServiceName,
 			r.MetricName,
 			r.MetricDescription,
 			r.MetricUnit,
@@ -168,8 +199,15 @@ func (s *metricStore) InsertSum(ctx context.Context, rows []model.SumRow) error 
 		return fmt.Errorf("sending meta batch (sum): %w", err)
 	}
 
-	// Insert fact rows
-	factBatch, err := s.conn.PrepareBatch(ctx, "INSERT INTO otel_metrics_sum")
+	// Insert fact rows with reference to meta_id
+	factBatch, err := s.conn.PrepareBatch(ctx, `
+        INSERT INTO otel_metrics_sum (
+            meta_id,
+            StartTimeUnix,
+            TimeUnix,
+            Value,
+            Flags
+        )`)
 	if err != nil {
 		return fmt.Errorf("preparing sum fact batch: %w", err)
 	}
@@ -177,6 +215,7 @@ func (s *metricStore) InsertSum(ctx context.Context, rows []model.SumRow) error 
 		id := computeMetaIDSum(r)
 		if err := factBatch.Append(
 			id,
+			r.StartTimeUnix,
 			r.TimeUnix,
 			r.Value,
 			r.Flags,
@@ -188,11 +227,11 @@ func (s *metricStore) InsertSum(ctx context.Context, rows []model.SumRow) error 
 }
 
 // Close closes the underlying ClickHouse connection.
-func (s *metricStore) Close() error {
+func (s *metric) Close() error {
 	return s.conn.Close()
 }
 
-// --- helpers ---
+// ---- helpers ----
 
 func stableMapPairs(m map[string]string) []string {
 	if len(m) == 0 {
@@ -262,7 +301,7 @@ func computeMetaIDSum(r model.SumRow) uint64 {
 	b.WriteString("|attrs=")
 	b.WriteString(strings.Join(stableMapPairs(r.Attributes), ","))
 	b.WriteString("|aggtemp=")
-	b.WriteString(fmt.Sprintf("%d", r.AggregationTemporality))
+	b.WriteString(strconv.Itoa(int(r.AggregationTemporality)))
 	b.WriteString("|monotonic=")
 	if r.IsMonotonic {
 		b.WriteString("1")

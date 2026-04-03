@@ -4,12 +4,13 @@ import (
 	"context"
 	"log/slog"
 
-	"dash0.com/otlp-log-processor-backend/internal/clickhouse"
+	"dash0.com/otlp-log-processor-backend/internal/store"
+
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 )
 
 type dash0MetricsServiceServer struct {
-	store clickhouse.MetricStore
+	store store.Metric
 
 	colmetricspb.UnimplementedMetricsServiceServer
 }
@@ -17,11 +18,16 @@ type dash0MetricsServiceServer struct {
 // NewMetricServer constructs a MetricsServiceServer.
 // The first parameter (addr) is accepted for backward compatibility with call sites
 // but is not used by the implementation.
-func NewMetricServer(_ string, store clickhouse.MetricStore) colmetricspb.MetricsServiceServer {
+func NewMetricServer(
+	store store.Metric,
+) colmetricspb.MetricsServiceServer {
 	return &dash0MetricsServiceServer{store: store}
 }
 
-func (m *dash0MetricsServiceServer) Export(ctx context.Context, request *colmetricspb.ExportMetricsServiceRequest) (*colmetricspb.ExportMetricsServiceResponse, error) {
+func (m *dash0MetricsServiceServer) Export(
+	ctx context.Context,
+	request *colmetricspb.ExportMetricsServiceRequest,
+) (*colmetricspb.ExportMetricsServiceResponse, error) {
 	slog.DebugContext(ctx, "Received ExportMetricsServiceRequest")
 	metricsReceivedCounter.Add(ctx, 1)
 

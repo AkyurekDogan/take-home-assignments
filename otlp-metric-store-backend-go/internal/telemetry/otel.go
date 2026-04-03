@@ -33,7 +33,12 @@ var res = resource.NewWithAttributes(
 
 // setupOTelSDK bootstraps the OpenTelemetry pipeline.
 // If it does not return an error, make sure to call shutdown for proper cleanup.
-func (o *otelProvider) Setup(ctx context.Context) (shutdown func(context.Context) error, err error) {
+func (o *otelProvider) Setup(
+	ctx context.Context,
+) (
+	shutdown func(context.Context) error,
+	err error,
+) {
 	var shutdownFuncs []func(context.Context) error
 
 	// shutdown calls cleanup functions registered via shutdownFuncs.
