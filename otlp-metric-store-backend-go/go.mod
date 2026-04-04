@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.43.0
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/testcontainers/testcontainers-go v0.40.0
 	go.opentelemetry.io/contrib/bridges/otelslog v0.16.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.66.0
@@ -18,6 +19,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.41.0
 	go.opentelemetry.io/proto/otlp v1.9.0
 	google.golang.org/grpc v1.79.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -27,7 +29,6 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
@@ -84,5 +85,4 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
