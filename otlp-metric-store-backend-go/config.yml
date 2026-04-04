@@ -9,3 +9,7 @@ clickhouse:
   username: "default"
   password: ""
 
+telemetry:
+  serviceName: "otlp-metrics-processor-backend"
+  serviceNamespace: "dash0-exercise"
+  serviceVersion: "1.0.0"

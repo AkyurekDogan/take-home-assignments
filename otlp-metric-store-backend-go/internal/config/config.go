@@ -16,6 +16,7 @@ const (
 type Config struct {
 	GRPC       GRPCConfig       `yaml:"grpc"`
 	ClickHouse ClickHouseConfig `yaml:"clickhouse"`
+	Telemetry  TelemetryConfig  `yaml:"telemetry"`
 }
 
 type GRPCConfig struct {
@@ -29,6 +30,13 @@ type ClickHouseConfig struct {
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
 	Enabled  bool   `yaml:"enabled"`
+}
+
+// TelemetryConfig configures OpenTelemetry resource attributes used by the app.
+type TelemetryConfig struct {
+	ServiceName      string `yaml:"serviceName"`
+	ServiceNamespace string `yaml:"serviceNamespace"`
+	ServiceVersion   string `yaml:"serviceVersion"`
 }
 
 // MustLoad reads configuration from config.yml in the module root (or current working
@@ -50,6 +58,11 @@ func MustLoadFile(path string) Config {
 			Database: "default",
 			Username: "default",
 			Enabled:  false,
+		},
+		Telemetry: TelemetryConfig{
+			ServiceName:      "otlp-metrics-processor-backend",
+			ServiceNamespace: "dash0-exercise",
+			ServiceVersion:   "1.0.0",
 		},
 	}
 

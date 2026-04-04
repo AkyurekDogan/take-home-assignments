@@ -13,6 +13,8 @@ import (
 	"dash0.com/otlp-log-processor-backend/internal/grpc"
 	"dash0.com/otlp-log-processor-backend/internal/store"
 	"dash0.com/otlp-log-processor-backend/internal/telemetry"
+	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 )
 
 func main() {
@@ -20,22 +22,31 @@ func main() {
 	var configPath string
 	flag.StringVar(&configPath, "config", "../config.yml", "Path to YAML config file")
 	flag.Parse()
-
+	// Load configuration from the specified file. The application will panic if the config cannot be loaded.
 	cfg := config.MustLoadFile(configPath)
-
+	// Set up signal handling to gracefully shut down the application on SIGINT or SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
 	// Add telemetry provider to the application.
 	// The provider will be responsible for setting up the OpenTelemetry SDK.
-	telemetryProvider := telemetry.NewOTELProvider()
+	var res = resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String(cfg.Telemetry.ServiceName),
+		semconv.ServiceNamespaceKey.String(cfg.Telemetry.ServiceNamespace),
+		semconv.ServiceVersionKey.String(cfg.Telemetry.ServiceVersion),
+	)
+	telemetryProvider := telemetry.NewOTELProvider(res)
 	// grpc server
 	grpcSrv := grpc.NewGRPCServer(
 		grpc.ServerOptions{
 			MaxReceiveMessageSize: cfg.GRPC.MaxReceiveMessageSize,
 		})
-
 	// Create store and initialize tables if ClickHouse is enabled and address is provided.
+	// If ClickHouse is disabled, the store will log insert operations instead of writing to a database.
+	// I chose to initialize the store and pass it to the application regardless of whether ClickHouse is enabled or not,
+	// so that the application can use the same interface for storing metrics without needing to know about the database configuration.
+	// If ClickHouse is disabled, NewClickhouse will return a nil connection and a specific error which we check for.
+	// But beside the error whithout the database connection, we can still create a Metric store that will log operations instead of writing to a database.
 	conn, err := store.NewClickhouse(ctx, store.ClickHouseOptions{
 		IsEnabled: cfg.ClickHouse.Enabled,
 		Addr:      cfg.ClickHouse.Addr,

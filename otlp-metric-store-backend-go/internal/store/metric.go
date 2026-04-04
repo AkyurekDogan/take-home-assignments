@@ -27,7 +27,7 @@ type metric struct {
 	conn        driver.Conn
 }
 
-// NewMetricStore creates a new ClickHouseMetricsStore connected to the given address.
+// NewMetric creates a new ClickHouseMetricsStore connected to the given address.
 func NewMetric(
 	conn driver.Conn,
 ) Metric {
@@ -248,6 +248,12 @@ func (s *metric) Close() error {
 
 // ---- helpers ----
 
+// stableMapPairs takes a map and returns a slice of "key=value" strings sorted by key.
+// This is used to create a consistent string representation of map fields for hashing,
+// ensuring that the same map content always produces the same string regardless of the original key order.
+// This is important for generating stable meta_id values for metrics, as the order of attributes should not affect the identity of the metric.
+// If the map is empty, it returns nil to avoid unnecessary processing and to represent the absence of attributes clearly.
+// For example, a map {"env": "prod", "version": "1.0"} would produce the slice ["env=prod", "version=1.0"] sorted by key.
 func stableMapPairs(m map[string]string) []string {
 	if len(m) == 0 {
 		return nil
@@ -263,6 +269,13 @@ func stableMapPairs(m map[string]string) []string {
 	}
 	return out
 }
+
+// computeMetaIDGauge computes a hash of the identifying fields of a Gauge metric to generate a meta_id.
+// This should include all fields that define the identity of the metric, excluding the value and timestamp fields.
+// The same metric with different values or timestamps should yield the same meta_id, while different metrics should yield different meta_ids.
+// The strings.Builder is used to create a consistent string representation of the metric's identity, which is then hashed using xxhash to produce a uint64 meta_id.
+// Also prevents a lot of allocations by reusing the builder and avoiding intermediate string concatenations.
+// Without labels, different values could accidentally produce ambiguous strings label structure can be dynamic and changing.
 
 func computeMetaIDGauge(r model.GaugeRow) uint64 {
 	var b strings.Builder
@@ -288,9 +301,15 @@ func computeMetaIDGauge(r model.GaugeRow) uint64 {
 	b.WriteString(r.ResourceSchemaUrl)
 	b.WriteString("|attrs=")
 	b.WriteString(strings.Join(stableMapPairs(r.Attributes), ","))
-	return xxhash.Sum64String(b.String())
+	return xxhash.Sum64String(b.String()) // A 64-bit integer is much cheaper and cleaner as a reference key.
 }
 
+// computeMetaIDSum computes a hash of the identifying fields of a Sum metric to generate a meta_id.
+// This should include all fields that define the identity of the metric, excluding the value and timestamp fields.
+// The same metric with different values or timestamps should yield the same meta_id, while different metrics should yield different meta_ids.
+// The strings.Builder is used to create a consistent string representation of the metric's identity, which is then hashed using xxhash to produce a uint64 meta_id.
+// Also prevents a lot of allocations by reusing the builder and avoiding intermediate string concatenations.
+// Without labels, different values could accidentally produce ambiguous strings label structure can be dynamic and changing.
 func computeMetaIDSum(r model.SumRow) uint64 {
 	var b strings.Builder
 	b.WriteString("svc=")
@@ -323,5 +342,5 @@ func computeMetaIDSum(r model.SumRow) uint64 {
 	} else {
 		b.WriteString("0")
 	}
-	return xxhash.Sum64String(b.String())
+	return xxhash.Sum64String(b.String()) // A 64-bit integer is much cheaper and cleaner as a reference key.
 }

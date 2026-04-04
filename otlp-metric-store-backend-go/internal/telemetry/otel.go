@@ -15,21 +15,17 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 )
 
-type otelProvider struct{}
-
-func NewOTELProvider() Provider {
-	return &otelProvider{}
+type otelProvider struct {
+	res *resource.Resource
 }
 
-var res = resource.NewWithAttributes(
-	semconv.SchemaURL,
-	semconv.ServiceNameKey.String("otlp-metrics-processor-backend"),
-	semconv.ServiceNamespaceKey.String("dash0-exercise"),
-	semconv.ServiceVersionKey.String("1.0.0"),
-)
+func NewOTELProvider(res *resource.Resource) Provider {
+	return &otelProvider{
+		res: res,
+	}
+}
 
 // setupOTelSDK bootstraps the OpenTelemetry pipeline.
 // If it does not return an error, make sure to call shutdown for proper cleanup.
@@ -107,7 +103,7 @@ func (o *otelProvider) newTraceProvider() (*trace.TracerProvider, error) {
 	}
 
 	traceProvider := trace.NewTracerProvider(
-		trace.WithResource(res),
+		trace.WithResource(o.res),
 		trace.WithSampler(trace.AlwaysSample()),
 		trace.WithBatcher(traceExporter,
 			// Default is 5s. Set to 1s for demonstrative purposes.
@@ -123,7 +119,7 @@ func (o *otelProvider) newMeterProvider() (*metric.MeterProvider, error) {
 	}
 
 	meterProvider := metric.NewMeterProvider(
-		metric.WithResource(res),
+		metric.WithResource(o.res),
 		metric.WithReader(metric.NewPeriodicReader(metricExporter,
 			// Default is 1m. Set to 10s for demonstrative purposes.
 			metric.WithInterval(10*time.Second))),
@@ -138,7 +134,7 @@ func (o *otelProvider) newLoggerProvider() (*log.LoggerProvider, error) {
 	}
 
 	loggerProvider := log.NewLoggerProvider(
-		log.WithResource(res),
+		log.WithResource(o.res),
 		log.WithProcessor(log.NewBatchProcessor(logExporter)),
 	)
 	return loggerProvider, nil

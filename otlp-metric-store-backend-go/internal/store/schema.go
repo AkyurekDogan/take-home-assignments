@@ -1,6 +1,10 @@
 package store
 
 // Dimension table containing unique metric metadata rows, referenced by meta_id.
+// This table is designed to be wide to capture all relevant metadata for a metric in a single row,
+// which simplifies querying and reduces the need for joins. The meta_id serves as a surrogate key
+// that can be efficiently referenced by the fact tables (gauge, sum, etc.) to associate metric data
+// points with their corresponding metadata.
 const createMetaTableSQL = `
 CREATE TABLE IF NOT EXISTS otel_metric_meta (
     meta_id UInt64,
@@ -18,7 +22,14 @@ CREATE TABLE IF NOT EXISTS otel_metric_meta (
     Attributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
     AggregationTemporality Nullable(Int32) CODEC(ZSTD(1)),
     IsMonotonic Nullable(Bool) CODEC(ZSTD(1))
-) ENGINE ReplacingMergeTree()
+)
+-- Using ReplacingMergeTree to allow idempotent upserts of identical meta rows.
+-- The meta table is a dimension keyed by meta_id; duplicates with the same
+-- meta_id (and identical content) may be inserted across parts during
+-- high-throughput ingestion. ReplacingMergeTree collapses these duplicates
+-- during merges without requiring explicit UPDATE/DELETE operations, whereas
+-- a plain MergeTree would retain all duplicates.
+ENGINE ReplacingMergeTree()
 ORDER BY (meta_id)
 SETTINGS index_granularity = 8192;
 `

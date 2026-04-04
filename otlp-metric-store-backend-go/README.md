@@ -61,3 +61,122 @@ go test ./...
 
 - [OpenTelemetry Metrics](https://opentelemetry.io/docs/concepts/signals/metrics/)
 - [OpenTelemetry Protocol (OTLP)](https://github.com/open-telemetry/opentelemetry-proto)
+
+## Solution Details
+
+This implementation normalizes metric metadata into a dedicated lookup table and stores metric datapoints as compact fact rows that reference the metadata by key. The design targets high throughput ingestion and efficient time-window queries without full table scans.
+
+Key artifacts (click to open):
+- Schema DDLs: [internal/store/schema.go](otlp-metric-store-backend-go/internal/store/schema.go)
+- ClickHouse store (ingestion logic): [internal/store/metric.go](otlp-metric-store-backend-go/internal/store/metric.go)
+- gRPC service (OTLP ingestion): [internal/grpc/metrics_server.go](otlp-metric-store-backend-go/internal/grpc/metrics_server.go)
+- gRPC server bootstrap: [internal/grpc/server.go](otlp-metric-store-backend-go/internal/grpc/server.go)
+- OTLP-to-internal mappers: [internal/grpc/mapper.go](otlp-metric-store-backend-go/internal/grpc/mapper.go)
+- Telemetry provider: [internal/telemetry/otel.go](otlp-metric-store-backend-go/internal/telemetry/otel.go)
+- YAML configuration: [internal/config/config.go](otlp-metric-store-backend-go/internal/config/config.go) and example [config.yml](otlp-metric-store-backend-go/config.yml)
+- Application wiring: [cmd/main.go](otlp-metric-store-backend-go/cmd/main.go)
+
+### Normalized Data Model
+
+Metadata (dimension) table (lookup):
+- Table: `otel_metric_meta`
+- Columns include service and resource identity, scope (instrumentation library) info, metric identity (name/description/unit), data-point attributes (tags), and for sums, temporality/monotonicity.
+- Engine: ReplacingMergeTree (see inline comment in [internal/store/schema.go](otlp-metric-store-backend-go/internal/store/schema.go)) to allow idempotent upserts and deduplication of identical metadata rows during merges.
+
+Fact tables (time-series):
+- `otel_metrics_gauge(meta_id, StartTimeUnix, TimeUnix, Value, Flags)`
+- `otel_metrics_sum(meta_id, StartTimeUnix, TimeUnix, Value, Flags)`
+- Both are MergeTree, partitioned by `toDate(TimeUnix)`, ordered by `(meta_id, toUnixTimestamp64Nano(TimeUnix))` for efficient time-windowed scans and segment pruning.
+
+Why this model:
+- Referencing by `meta_id` keeps fact rows lean and ingestion fast.
+- Partitioning by date plus ordering by `(meta_id, time)` ensures time-bounded queries avoid full scans.
+- Changing attributes/resources naturally produce new `meta_id` rows while preserving historical queryability.
+
+### Ingestion Flow
+
+1) gRPC receives OTLP metrics at the MetricsService `Export` endpoint: [internal/grpc/metrics_server.go](otlp-metric-store-backend-go/internal/grpc/metrics_server.go)
+2) OTLP data is mapped into internal rows using mappers in [internal/grpc/mapper.go](otlp-metric-store-backend-go/internal/grpc/mapper.go)
+3) The ClickHouse store writes using a two-phase batch per metric type: [internal/store/metric.go](otlp-metric-store-backend-go/internal/store/metric.go)
+   - Upsert unique metadata rows into `otel_metric_meta` (explicit column lists to avoid order mistakes)
+   - Insert fact rows referencing `meta_id` with timestamps and values
+
+High-throughput notes:
+- Deduplication of meta per batch avoids repeated inserts in a single batch.
+- ReplacingMergeTree collapses duplicate meta rows across parts during background merges.
+- Fact rows are minimal (key + time + value + flags), improving throughput and storage.
+
+### Querying Patterns
+
+Always include a time filter (PREWHERE) to leverage partition pruning:
+
+```sql
+-- Gauge time series over last hour for a given metric and service
+SELECT f.TimeUnix, f.Value
+FROM otel_metrics_gauge AS f
+INNER JOIN otel_metric_meta AS m USING (meta_id)
+PREWHERE f.TimeUnix >= now() - INTERVAL 1 HOUR
+WHERE m.MetricName = 'cpu.utilization' AND m.ServiceName = 'api'
+ORDER BY f.TimeUnix;
+```
+
+```sql
+-- Sum aggregation per minute with an attribute filter in a day range
+SELECT toStartOfMinute(f.TimeUnix) AS ts, sum(f.Value) AS total
+FROM otel_metrics_sum AS f
+INNER JOIN otel_metric_meta AS m USING (meta_id)
+PREWHERE f.TimeUnix >= toDateTime('2026-04-03 00:00:00')
+  AND f.TimeUnix < toDateTime('2026-04-04 00:00:00')
+WHERE m.MetricName = 'http.requests.total' AND m.Attributes['method'] = 'GET'
+GROUP BY ts
+ORDER BY ts;
+```
+
+### Configuration
+
+Application reads configuration from YAML (default path: `config.yml`):
+- Example: [config.yml](otlp-metric-store-backend-go/config.yml)
+- Schema: [internal/config/config.go](otlp-metric-store-backend-go/internal/config/config.go)
+
+Blocks:
+- `grpc`: listen address and max message size
+- `clickhouse`: connectivity and enable flag; when enabled, the app ensures tables on startup
+- `telemetry`: serviceName, serviceNamespace, serviceVersion for OpenTelemetry Resource
+
+### Telemetry
+
+The app initializes OpenTelemetry via a provider abstraction: [internal/telemetry/otel.go](otlp-metric-store-backend-go/internal/telemetry/otel.go)
+- Current exporters are stdout for traces/metrics/logs for quick local inspection.
+- The Resource is built from YAML config in [cmd/main.go](otlp-metric-store-backend-go/cmd/main.go) so service identity can be changed without code edits.
+- To send to a dashboard (Jaeger, Grafana, etc.), replace the stdout exporters with OTLP exporters and run an OpenTelemetry Collector.
+
+### gRPC Server and Service Wiring
+
+- The gRPC server is created via a factory and exposes `grpc.ServiceRegistrar`: [internal/grpc/server.go](otlp-metric-store-backend-go/internal/grpc/server.go)
+- The OTLP MetricsService implementation is registered against the server: [internal/grpc/metrics_server.go](otlp-metric-store-backend-go/internal/grpc/metrics_server.go)
+- Application composition and lifecycle management live in [cmd/main.go](otlp-metric-store-backend-go/cmd/main.go)
+
+### Running Locally
+
+Build:
+```shell
+cd otlp-metric-store-backend-go
+go build ./...
+```
+
+Run (uses config.yml by default):
+```shell
+cd otlp-metric-store-backend-go
+go run ./cmd -config=config.yml
+```
+
+Notes:
+- To enable ClickHouse persistence, set `clickhouse.enabled: true` and provide `addr/credentials` in `config.yml`. Tables are created automatically on startup.
+- With ClickHouse disabled, the service still accepts metrics but does not persist them.
+
+### Design Rationale (Summary)
+
+- Reference key (`meta_id`) keeps facts lean and joins fast; metadata changes create new keys for historical accuracy.
+- ReplacingMergeTree for metadata tolerates duplicate upserts and compacts storage automatically.
+- Time partitioning and ordering by `(meta_id, time)` prevent full table scans under time-bounded queries.
+- Explicit column lists in INSERT batches prevent schema/order drift issues during ingestion.
